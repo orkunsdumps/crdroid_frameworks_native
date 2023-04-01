@@ -921,7 +921,8 @@ void GLESRenderEngine::handleRoundedCorners(const DisplaySettings& display,
 
     // Finally, we cut the layer into 3 parts, with top and bottom parts having rounded corners
     // and the middle part without rounded corners.
-    const int32_t radius = ceil(layer.geometry.roundedCornersRadius);
+    const int32_t radius = ceil(
+            (layer.geometry.roundedCornersRadius.x + layer.geometry.roundedCornersRadius.y) / 2.0);
     const Rect topRect(bounds.left, bounds.top, bounds.right, bounds.top + radius);
     setScissor(topRect);
     drawMesh(mesh);
@@ -1118,6 +1119,14 @@ void GLESRenderEngine::drawLayersInternal(
             }
         }
     }
+
+    // Limit blur to the two frontmost layers for performance. We need one at the front
+    // and one behind for cross-fading and additional blurring. Rendering additional layers
+    // comes at a big performance penalty and makes little to no noticeable difference.
+    while (blurLayers.size() > 2) {
+        blurLayers.pop_front();
+    }
+
     const auto blurLayersSize = blurLayers.size();
 
     if (blurLayersSize == 0) {
@@ -1161,6 +1170,7 @@ void GLESRenderEngine::drawLayersInternal(
     const mat4 projectionMatrix =
             ui::Transform(display.orientation).asMatrix4() * mState.projectionMatrix;
 
+    int blurredLayers = 0;
     Mesh mesh = Mesh::Builder()
                         .setPrimitive(Mesh::TRIANGLE_FAN)
                         .setVertices(4 /* count */, 2 /* size */)
@@ -1203,7 +1213,7 @@ void GLESRenderEngine::drawLayersInternal(
                 return;
             }
 
-            status = mBlurFilter->render(blurLayersSize > 1);
+            status = mBlurFilter->render(blurLayersSize, blurredLayers);
             if (status != NO_ERROR) {
                 ALOGE("Failed to render blur effect! Aborting GPU composition for buffer (%p).",
                       buffer->getBuffer()->handle);
@@ -1211,6 +1221,8 @@ void GLESRenderEngine::drawLayersInternal(
                 resultPromise->set_value({status, base::unique_fd()});
                 return;
             }
+
+            blurredLayers += 1;
         }
 
         // Ensure luminance is at least 100 nits to avoid div-by-zero
@@ -1266,23 +1278,24 @@ void GLESRenderEngine::drawLayersInternal(
 
         const half3 solidColor = layer.source.solidColor;
         const half4 color = half4(solidColor.r, solidColor.g, solidColor.b, layer.alpha);
+        const float radius =
+                (layer.geometry.roundedCornersRadius.x + layer.geometry.roundedCornersRadius.y) /
+                2.0f;
         // Buffer sources will have a black solid color ignored in the shader,
         // so in that scenario the solid color passed here is arbitrary.
-        setupLayerBlending(usePremultipliedAlpha, isOpaque, disableTexture, color,
-                           layer.geometry.roundedCornersRadius);
+        setupLayerBlending(usePremultipliedAlpha, isOpaque, disableTexture, color, radius);
         if (layer.disableBlending) {
             glDisable(GL_BLEND);
         }
         setSourceDataSpace(layer.sourceDataspace);
 
         if (layer.shadow.length > 0.0f) {
-            handleShadow(layer.geometry.boundaries, layer.geometry.roundedCornersRadius,
-                         layer.shadow);
+            handleShadow(layer.geometry.boundaries, radius, layer.shadow);
         }
         // We only want to do a special handling for rounded corners when having rounded corners
         // is the only reason it needs to turn on blending, otherwise, we handle it like the
         // usual way since it needs to turn on blending anyway.
-        else if (layer.geometry.roundedCornersRadius > 0.0 && color.a >= 1.0f && isOpaque) {
+        else if (radius > 0.0 && color.a >= 1.0f && isOpaque) {
             handleRoundedCorners(display, layer, mesh);
         } else {
             drawMesh(mesh);
