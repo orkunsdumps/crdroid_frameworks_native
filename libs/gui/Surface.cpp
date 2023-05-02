@@ -1280,6 +1280,10 @@ void Surface::querySupportedTimestampsLocked() const {
 int Surface::query(int what, int* value) const {
     ATRACE_CALL();
     ALOGV("Surface::query");
+    if ((what == NATIVE_WINDOW_WIDTH) || (what == NATIVE_WINDOW_HEIGHT)) {
+        return mGraphicBufferProducer->query(what, value);
+    }
+
     { // scope for the lock
         Mutex::Autolock lock(mMutex);
         switch (what) {
@@ -1950,6 +1954,7 @@ int Surface::disconnect(int api, IGraphicBufferProducer::DisconnectMode mode) {
         mReqHeight = 0;
         mReqUsage = 0;
         mCrop.clear();
+        mDataSpace = Dataspace::UNKNOWN;
         mScalingMode = NATIVE_WINDOW_SCALING_MODE_FREEZE;
         mTransform = 0;
         mStickyTransform = 0;
